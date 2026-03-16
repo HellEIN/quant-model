@@ -8,7 +8,7 @@ import time
 
 # --- CONFIGURATION ---
 CONCURRENT_WORKERS = 4 
-HEADLESS = False         
+HEADLESS = True         
 MAX_RETRIES = 10       
 # ---------------------
 
