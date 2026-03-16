@@ -1,11 +1,5 @@
-import csv
-import os
-from stored_object import StoredObject
+import os 
 
+com_list = os.listdir(r"C:\Users\mae\Documents\GitHub\quant-model\data\companies")
 
-objs = StoredObject.load_from_csv()
-
-for obj in objs:   
-    if obj.instrument =="SAMIR":
-        print(obj.missing_data)
-        
+print(help(os))
