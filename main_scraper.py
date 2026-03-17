@@ -55,89 +55,111 @@ async def scrape_worker(browser, company_queue, global_writer, date, headers, st
         company = await company_queue.get()
         success = False
 
-        # Define file path to check for existing data
         company_file_path = os.path.join(COMPANIES_DIR, f"{company.replace(' ', '_')}.csv")
         last_local_row = get_last_scraped_row(company_file_path)
 
         for attempt in range(MAX_RETRIES):
             try:
-                await page.goto("https://www.casablanca-bourse.com/fr/instruments", wait_until="domcontentloaded")
+                await page.goto(
+                    "https://www.casablanca-bourse.com/fr/instruments",
+                    wait_until="domcontentloaded"
+                )
+
                 await page.fill("input[placeholder='Séance']", '')
                 await page.fill("input[placeholder='Date fin']", '')
 
-                # Autocomplete Logic
+                # autocomplete 
                 combo_input = page.locator('input[role="combobox"]')
                 await combo_input.click()
                 await page.wait_for_timeout(400)
+
                 await page.keyboard.press("Control+A")
-                await page.wait_for_timeout(400)
                 await page.keyboard.press("Backspace")
+
                 await combo_input.type(company, delay=100)
 
                 target_item = page.locator('ul[role="listbox"] li').filter(has_text=company).first
                 await target_item.wait_for(state="visible", timeout=10000)
                 await target_item.click()
+
                 await page.click('button:has-text("Appliquer")')
-                
-                # Check if we actually need to scrape
+
                 rows_locator = page.locator("table tbody.whitespace-nowrap tr")
                 await rows_locator.first.wait_for(state="attached", timeout=10000)
-                
-                # Compare latest web row with latest local row
+
+                # check newest web row
                 first_web_row_raw = await rows_locator.first.locator("td").all_inner_texts()
                 first_web_row = [str(format_value(c)) for c in first_web_row_raw]
 
                 if last_local_row and first_web_row == last_local_row:
-                    print(f"[Worker] {company} is already up to date. Skipping...")
+                    print(f"[Worker] {company} already up to date.")
                     success = True
                     break
 
-                # If different, append new data
-                file_exists = os.path.exists(company_file_path)
-                with open(company_file_path, "a", newline="", encoding="utf-8") as f:
+                # store new rows temporarily
+                new_rows = []
+
+                current_page = 1
+                new_rows_count = 0
+
+                while True:
+                    rows = await rows_locator.all()
+                    stop_pagination = False
+
+                    for row in rows:
+                        cells_raw = await row.locator("td").all_inner_texts()
+                        processed = [format_value(c) for c in cells_raw]
+
+                        if last_local_row and [str(i) for i in processed] == last_local_row:
+                            stop_pagination = True
+                            break
+
+                        new_rows.append(processed)
+                        global_writer.writerow([company] + processed)
+                        new_rows_count += 1
+
+                    if stop_pagination:
+                        break
+
+                    next_btn = page.get_by_role("button", name=str(current_page + 1), exact=True)
+
+                    if await next_btn.is_visible():
+                        await next_btn.click()
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                        current_page += 1
+                    else:
+                        break
+
+                # read existing rows
+                old_rows = []
+                if os.path.exists(company_file_path):
+                    with open(company_file_path, "r", newline="", encoding="utf-8") as f:
+                        reader = csv.reader(f)
+                        old_rows = list(reader)
+
+                if old_rows and old_rows[0] == headers[1:]:
+                    old_rows = old_rows[1:]
+
+                # rewrite CSV (new rows first)
+                with open(company_file_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
-                    if not file_exists:
-                        writer.writerow(headers[1:])
+                    writer.writerow(headers[1:])
+                    writer.writerows(new_rows)
+                    writer.writerows(old_rows)
 
-                    current_page = 1
-                    new_rows_count = 0
-                    while True:
-                        rows = await rows_locator.all()
-                        stop_pagination = False
-                        
-                        for row in rows:
-                            cells_raw = await row.locator("td").all_inner_texts()
-                            processed = [format_value(c) for c in cells_raw]
-                            
-                            # If we hit the row we already have, stop scraping for this company
-                            if last_local_row and [str(i) for i in processed] == last_local_row:
-                                stop_pagination = True
-                                break
-                            
-                            writer.writerow(processed)
-                            global_writer.writerow([company] + processed)
-                            new_rows_count += 1
+                print(f"[Worker] {company} updated with {new_rows_count} new rows.")
 
-                        if stop_pagination: break
-
-                        next_btn = page.get_by_role("button", name=str(current_page + 1), exact=True)
-                        if await next_btn.is_visible():
-                            await next_btn.click()
-                            await page.wait_for_load_state("networkidle", timeout=10000)
-                            current_page += 1
-                        else: break
-                
-                print(f"[Worker] {company} updated with {new_rows_count} new entries.")
                 success = True
                 stats['success'].append(company)
                 break
 
             except Exception as e:
-                print(f"   [Error] {company} attempt {attempt+1}: {str(e)[:50]}")
+                print(f"[Error] {company} attempt {attempt+1}: {str(e)[:60]}")
                 await asyncio.sleep(2)
 
-        if not success: stats['failed'].append(company)
-        company_queue.task_done()
-    
-    await context.close()
+        if not success:
+            stats['failed'].append(company)
 
+        company_queue.task_done()
+
+    await context.close()

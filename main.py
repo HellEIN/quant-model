@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright
 from main_scraper import get_all_companies, scrape_worker, COMPANIES_DIR, GLOBAL_DIR
 from SQL_engine import csv_to_sql_db
 
-HEADLESS = False
+HEADLESS = True
 CONCURRENT_WORKERS = 4
 
 async def main():
@@ -49,7 +49,7 @@ async def main():
     print("SQL database updated with new data.")
 
 def start_daily_schedule():
-    target_time = "19:00" 
+    target_time = "18:10"  
     schedule.every().day.at(target_time).do(lambda: asyncio.run(main()))
     print(f"Scheduler started. Will run every day at {target_time}. Keep this terminal open.")
     
